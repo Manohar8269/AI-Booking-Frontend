@@ -16,6 +16,16 @@ const isoLocal = (date: Date) => {
   return local.toISOString().slice(0, 16);
 };
 const startOfDay = (value: string) => new Date(new Date(value).toDateString()).getTime();
+const displayAssistantReply = (text: string) => text.replace(
+  /\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})\b/g,
+  (value) => {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    const day = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" }).format(date);
+    const time = new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit", hour12: true }).format(date);
+    return `${day} at ${time}`;
+  },
+);
 
 function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -293,7 +303,12 @@ const assistantWelcome: AssistantMessage = { role: "assistant", text: "Hi! I can
 function readAssistantHistory(userId: number): AssistantConversation[] {
   try {
     const parsed: unknown = JSON.parse(localStorage.getItem(`calendar_lab_assistant_history_${userId}`) || "[]");
-    return Array.isArray(parsed) ? parsed as AssistantConversation[] : [];
+    return Array.isArray(parsed) ? (parsed as AssistantConversation[]).map((conversation) => ({
+      ...conversation,
+      messages: conversation.messages.map((message) => message.role === "assistant"
+        ? { ...message, text: displayAssistantReply(message.text) }
+        : message),
+    })) : [];
   } catch { return []; }
 }
 
@@ -328,7 +343,7 @@ function AssistantPage({ user, notify }: { user: User; notify: (kind: Notice["ki
     try {
       const result = await api<ChatReply>("/api/chat", { method: "POST", body: JSON.stringify({ message }) });
       setMode(/connected|llm/i.test(result.mode || "") ? "Connected LLM" : "Local Demo Mode");
-      const replyMessages = [...userMessages, { role: "assistant" as const, text: result.reply }];
+      const replyMessages = [...userMessages, { role: "assistant" as const, text: displayAssistantReply(result.reply) }];
       setMessages(replyMessages);
       remember(conversationId, replyMessages, title);
       if (result.status === "pending_approval") notify("success", "An approval request is waiting for your review.");
