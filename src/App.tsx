@@ -4,7 +4,7 @@ import { Link, Navigate, NavLink, Route, Routes, useLocation, useNavigate, useSe
 import {
   Activity, AlertCircle, ArrowRight, Bot, CalendarDays, Check, CheckCircle2, ChevronLeft,
   ChevronRight, Clock3, LayoutDashboard, LogOut, Menu, Plus, Settings, ShieldCheck,
-  Sparkles, Users, X,
+  MessageSquare, Sparkles, Users, X,
 } from "lucide-react";
 import { api, dateTime, getToken, setToken } from "./api";
 import type { Approval, AuditEntry, ChatReply, Meeting, User } from "./api";
@@ -67,7 +67,7 @@ function App() {
   };
   const signup = async (name: string, email: string, password: string) => {
     await api("/api/auth/signup", { method: "POST", body: JSON.stringify({ name, email, password }) });
-    await login(email, password);
+    navigate("/login", { replace: true, state: { signupComplete: true, email } });
   };
 
   if (checking) return <div className="boot-screen"><div className="loader" />Loading your workspace…</div>;
@@ -76,8 +76,8 @@ function App() {
     <>
       {notice && <div role="status" className={`toast ${notice.kind}`}><span>{notice.kind === "success" ? <CheckCircle2 size={18} /> : <AlertCircle size={18} />}{notice.text}</span><button aria-label="Dismiss" onClick={() => setNotice(null)}><X size={16} /></button></div>}
       <Routes>
-        <Route path="/login" element={user ? <Navigate to="/dashboard" replace /> : <AuthPage mode="login" onLogin={login} />} />
-        <Route path="/signup" element={user ? <Navigate to="/dashboard" replace /> : <AuthPage mode="signup" onSignup={signup} />} />
+        <Route path="/login" element={user ? <Navigate to="/dashboard" replace /> : <AuthPage key="login" mode="login" onLogin={login} />} />
+        <Route path="/signup" element={user ? <Navigate to="/dashboard" replace /> : <AuthPage key="signup" mode="signup" onSignup={signup} />} />
         <Route path="*" element={user ? <Shell user={user} mode={mode} logout={logout} notify={notify} /> : <Navigate to="/login" state={{ from: location }} replace />} />
       </Routes>
     </>
@@ -89,8 +89,10 @@ function AuthPage({ mode, onLogin, onSignup }: {
   onLogin?: (email: string, password: string) => Promise<void>;
   onSignup?: (name: string, email: string, password: string) => Promise<void>;
 }) {
+  const location = useLocation();
+  const registration = location.state as { signupComplete?: boolean; email?: string } | null;
   const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(registration?.email || "");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [visible, setVisible] = useState(false);
@@ -125,6 +127,7 @@ function AuthPage({ mode, onLogin, onSignup }: {
       <section className="auth-panel">
         <form className="auth-card" onSubmit={submit}>
           <div className="auth-heading"><span className="eyebrow">YOUR WORKSPACE</span><h2>{signup ? "Create your account" : "Welcome back"}</h2><p>{signup ? "Start organizing your calendar securely." : "Sign in to continue to your calendar."}</p></div>
+          {!signup && registration?.signupComplete && <div className="form-success" role="status"><CheckCircle2 size={16} />Account created. Sign in to continue.</div>}
           {signup && <label>Full name<input autoComplete="name" value={name} onChange={(event) => setName(event.target.value)} required maxLength={100} placeholder="Alex Morgan" /></label>}
           <label>Email address<input autoComplete="email" type="email" value={email} onChange={(event) => setEmail(event.target.value)} required placeholder="you@example.com" /></label>
           <label>Password<span className="password-wrap"><input autoComplete={signup ? "new-password" : "current-password"} type={visible ? "text" : "password"} value={password} onChange={(event) => setPassword(event.target.value)} required placeholder={signup ? "At least 8 characters" : "Enter your password"} /><button type="button" className="text-button" onClick={() => setVisible(!visible)}>{visible ? "Hide" : "Show"}</button></span></label>
@@ -145,7 +148,6 @@ const navItems = [
   { to: "/meetings", label: "Meetings", icon: Users },
   { to: "/assistant", label: "AI assistant", icon: Bot },
   { to: "/approvals", label: "Approvals", icon: CheckCircle2 },
-  { to: "/activity", label: "Activity log", icon: Activity },
   { to: "/settings", label: "Profile & settings", icon: Settings },
 ];
 
@@ -165,7 +167,7 @@ function Shell({ user, mode, logout, notify }: { user: User; mode: string; logou
           <Route path="/dashboard" element={<Dashboard user={user} />} />
           <Route path="/calendar" element={<CalendarPage />} />
           <Route path="/meetings" element={<MeetingsPage notify={notify} />} />
-          <Route path="/assistant" element={<AssistantPage notify={notify} />} />
+          <Route path="/assistant" element={<AssistantPage user={user} notify={notify} />} />
           <Route path="/approvals" element={<ApprovalsPage notify={notify} />} />
           <Route path="/activity" element={<ActivityPage />} />
           <Route path="/settings" element={<SettingsPage user={user} mode={mode} />} />
@@ -285,28 +287,59 @@ function MeetingsPage({ notify }: { notify: (kind: Notice["kind"], text: string)
   </>;
 }
 
-function AssistantPage({ notify }: { notify: (kind: Notice["kind"], text: string) => void }) {
-  const [messages, setMessages] = useState<{ role: "assistant" | "user"; text: string }[]>([{ role: "assistant", text: "Hi! I can help manage your calendar. Try “Show my upcoming meetings” or “Check if I’m available tomorrow at 2 PM.”" }]);
+type AssistantMessage = { role: "assistant" | "user"; text: string };
+type AssistantConversation = { id: string; title: string; updatedAt: string; messages: AssistantMessage[] };
+const assistantWelcome: AssistantMessage = { role: "assistant", text: "Hi! I can help manage your calendar. Try “Show my upcoming meetings” or “Check if I’m available tomorrow at 2 PM.”" };
+function readAssistantHistory(userId: number): AssistantConversation[] {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(`calendar_lab_assistant_history_${userId}`) || "[]");
+    return Array.isArray(parsed) ? parsed as AssistantConversation[] : [];
+  } catch { return []; }
+}
+
+function AssistantPage({ user, notify }: { user: User; notify: (kind: Notice["kind"], text: string) => void }) {
+  const [history, setHistory] = useState<AssistantConversation[]>(() => readAssistantHistory(user.id));
+  const [activeId, setActiveId] = useState<string | null>(() => readAssistantHistory(user.id)[0]?.id ?? null);
+  const [messages, setMessages] = useState<AssistantMessage[]>(() => readAssistantHistory(user.id)[0]?.messages ?? [assistantWelcome]);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [mode, setMode] = useState("Local Demo Mode");
+  useEffect(() => {
+    localStorage.setItem(`calendar_lab_assistant_history_${user.id}`, JSON.stringify(history));
+  }, [history, user.id]);
+  const remember = (id: string, nextMessages: AssistantMessage[], title: string) => {
+    setHistory((current) => {
+      const previous = current.find((conversation) => conversation.id === id);
+      const conversation = { id, title: previous?.title || title.slice(0, 54), updatedAt: new Date().toISOString(), messages: nextMessages };
+      return [conversation, ...current.filter((item) => item.id !== id)].slice(0, 30);
+    });
+  };
   const send = async (event?: FormEvent, preset?: string) => {
     event?.preventDefault();
     const message = (preset || text).trim();
     if (!message || busy) return;
-    setMessages((current) => [...current, { role: "user", text: message }]);
+    const conversationId = activeId || (globalThis.crypto?.randomUUID?.() ?? `chat-${Date.now()}`);
+    const title = messages.find((item) => item.role === "user")?.text || message;
+    const userMessages = [...messages, { role: "user" as const, text: message }];
+    setActiveId(conversationId);
+    setMessages(userMessages);
+    remember(conversationId, userMessages, title);
     setText(""); setBusy(true);
     try {
       const result = await api<ChatReply>("/api/chat", { method: "POST", body: JSON.stringify({ message }) });
       setMode(/connected|llm/i.test(result.mode || "") ? "Connected LLM" : "Local Demo Mode");
-      setMessages((current) => [...current, { role: "assistant", text: result.reply }]);
+      const replyMessages = [...userMessages, { role: "assistant" as const, text: result.reply }];
+      setMessages(replyMessages);
+      remember(conversationId, replyMessages, title);
       if (result.status === "pending_approval") notify("success", "An approval request is waiting for your review.");
     } catch (reason) {
-      setMessages((current) => [...current, { role: "assistant", text: reason instanceof Error ? reason.message : "I could not process that request." }]);
+      const errorMessages = [...userMessages, { role: "assistant" as const, text: reason instanceof Error ? reason.message : "I could not process that request." }];
+      setMessages(errorMessages);
+      remember(conversationId, errorMessages, title);
       notify("error", "The assistant request could not be completed.");
     } finally { setBusy(false); }
   };
-  return <><PageTitle eyebrow="YOUR AI CALENDAR COMPANION" title="AI assistant" description="Tell your assistant what you need in plain language." /><div className="assistant-layout"><section className="card chat-card"><div className="chat-header"><span className="assistant-avatar"><Bot size={20} /></span><div><strong>Calendar assistant</strong><small><span className="online-dot" />{mode}</small></div><span className="safe-chip"><ShieldCheck size={14} /> Scoped tools</span></div><div className="chat-messages">{messages.map((message, index) => <div key={index} className={`chat-message ${message.role}`}><span className="message-avatar">{message.role === "assistant" ? <Bot size={15} /> : "You"}</span><div className="bubble">{message.text}</div></div>)}{busy && <div className="chat-message assistant"><span className="message-avatar"><Bot size={15} /></span><div className="bubble typing"><i /><i /><i /></div></div>}</div><form className="chat-input" onSubmit={(event) => void send(event)}><input value={text} onChange={(event) => setText(event.target.value)} placeholder="Ask about your calendar…" aria-label="Message assistant" /><button className="button primary" disabled={busy || !text.trim()}>Send <ArrowRight size={16} /></button></form></section><aside className="assistant-side"><div className="card"><div className="eyebrow">TRY ASKING</div><div className="suggestion-list">{["Show my upcoming meetings", "Check if I’m available tomorrow at 2 PM", "Schedule a project meeting tomorrow at 11 AM", "Cancel my project review meeting"].map((item) => <button key={item} onClick={() => void send(undefined, item)}>{item}<ArrowRight size={14} /></button>)}</div></div><div className="training-note"><ShieldCheck size={18} /><div><strong>Human oversight matters</strong><p>In secure mode, high-impact actions such as cancellation require your approval before they happen.</p><Link to="/approvals">Review pending approvals <ArrowRight size={13} /></Link></div></div></aside></div></>;
+  return <><PageTitle eyebrow="YOUR AI CALENDAR COMPANION" title="AI assistant" description="Tell your assistant what you need in plain language." /><div className="assistant-layout"><section className="card chat-card"><div className="chat-header"><span className="assistant-avatar"><Bot size={20} /></span><div><strong>Calendar assistant</strong><small><span className="online-dot" />{mode}</small></div><span className="safe-chip"><ShieldCheck size={14} /> Scoped tools</span><button className="button secondary small new-chat" onClick={() => { setActiveId(null); setMessages([assistantWelcome]); setText(""); }}><Plus size={14} /> New chat</button></div><div className="chat-messages">{messages.map((message, index) => <div key={index} className={`chat-message ${message.role}`}><span className="message-avatar">{message.role === "assistant" ? <Bot size={15} /> : "You"}</span><div className="bubble">{message.text}</div></div>)}{busy && <div className="chat-message assistant"><span className="message-avatar"><Bot size={15} /></span><div className="bubble typing"><i /><i /><i /></div></div>}</div><form className="chat-input" onSubmit={(event) => void send(event)}><input value={text} onChange={(event) => setText(event.target.value)} placeholder="Ask about your calendar…" aria-label="Message assistant" /><button className="button primary" disabled={busy || !text.trim()}>Send <ArrowRight size={16} /></button></form></section><aside className="assistant-side"><div className="card assistant-history"><div className="history-heading"><div className="eyebrow"><MessageSquare size={13} /> CHAT HISTORY</div></div>{history.length ? <div className="assistant-history-list">{history.map((conversation) => <button key={conversation.id} className={`assistant-history-item${activeId === conversation.id ? " selected" : ""}`} onClick={() => { setActiveId(conversation.id); setMessages(conversation.messages); setText(""); }}><span>{conversation.title}</span><small>{new Date(conversation.updatedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</small></button>)}</div> : <p className="history-empty">Your conversations will appear here.</p>}</div><div className="card"><div className="eyebrow">TRY ASKING</div><div className="suggestion-list">{["Show my upcoming meetings", "Check if I’m available tomorrow at 2 PM", "Schedule a project meeting tomorrow at 11 AM", "Cancel my project review meeting"].map((item) => <button key={item} onClick={() => void send(undefined, item)}>{item}<ArrowRight size={14} /></button>)}</div></div><div className="training-note"><ShieldCheck size={18} /><div><strong>Human oversight matters</strong><p>In secure mode, high-impact actions such as cancellation require your approval before they happen.</p><Link to="/approvals">Review pending approvals <ArrowRight size={13} /></Link></div></div></aside></div></>;
 }
 
 function useApprovals() {

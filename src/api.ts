@@ -1,4 +1,4 @@
-const API_BASE = (import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8001").replace(/\/$/, "");
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || "https://ai-booking-backend-pe46.onrender.com").replace(/\/$/, "");
 const TOKEN_KEY = "calendar_lab_token";
 
 export interface User {
