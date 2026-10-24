@@ -406,10 +406,6 @@ function Shell({ user, mode, logout, notify }: ShellProps) {
           ))}
         </nav>
         <div className="sidebar-bottom">
-          <div className="mode-card">
-            <div className="mode-row"><span className={`mode-dot ${mode}`} />{modeLabel}</div>
-            <small>Backend-controlled training mode</small>
-          </div>
           <div className="user-row">
             <div className="avatar">{initial}</div>
             <div className="user-info"><strong>{user.name}</strong><small>{user.email}</small></div>
