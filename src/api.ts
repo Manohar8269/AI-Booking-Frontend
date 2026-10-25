@@ -74,7 +74,7 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
 
   let response: Response;
   try {
-    response = await fetch(`${API_BASE}${path}`, { ...options, headers });
+    response = await fetch(`${API_BASE}${path}`, { ...options, headers, cache: "no-store" });
   } catch {
     throw new Error("Could not reach the API. Make sure the backend is running at " + API_BASE);
   }

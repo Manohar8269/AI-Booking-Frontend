@@ -121,6 +121,15 @@ function App() {
 
   useEffect(() => { void refreshUser(); }, [refreshUser]);
   useEffect(() => {
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key !== "calendar_lab_token") return;
+      setChecking(true);
+      void refreshUser();
+    };
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
+  }, [refreshUser]);
+  useEffect(() => {
     const handleUnauthorized = () => { setUser(null); navigate("/login", { replace: true }); };
     window.addEventListener("calendar:unauthorized", handleUnauthorized);
     return () => window.removeEventListener("calendar:unauthorized", handleUnauthorized);
@@ -158,7 +167,7 @@ function App() {
       <Routes>
         <Route path="/login" element={user ? <Navigate to="/dashboard" replace /> : <AuthPage key="login" mode="login" onLogin={login} />} />
         <Route path="/signup" element={user ? <Navigate to="/dashboard" replace /> : <AuthPage key="signup" mode="signup" onSignup={signup} />} />
-        <Route path="*" element={user ? <Shell user={user} mode={mode} logout={logout} notify={notify} /> : <Navigate to="/login" state={{ from: location }} replace />} />
+        <Route path="*" element={user ? <Shell key={user.id} user={user} mode={mode} logout={logout} notify={notify} /> : <Navigate to="/login" state={{ from: location }} replace />} />
       </Routes>
     </>
   );
