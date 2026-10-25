@@ -1,5 +1,11 @@
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || "https://ai-booking-backend-pe46.onrender.com").replace(/\/$/, "");
 const TOKEN_KEY = "calendar_lab_token";
+export let DEFAULT_TIME_ZONE = "Asia/Kolkata";
+
+export function setDefaultTimeZone(timeZone: string): void {
+  new Intl.DateTimeFormat(undefined, { timeZone });
+  DEFAULT_TIME_ZONE = timeZone;
+}
 
 export interface User {
   id: number;
@@ -85,4 +91,8 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
 }
 
 export const dateTime = (value: string) =>
-  new Date(value).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+  new Date(value).toLocaleString(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: DEFAULT_TIME_ZONE,
+  });

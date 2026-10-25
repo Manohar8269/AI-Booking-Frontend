@@ -6,23 +6,90 @@ import {
   ChevronRight, Clock3, LayoutDashboard, LogOut, Menu, Plus, Settings, ShieldCheck,
   MessageSquare, Sparkles, Users, X,
 } from "lucide-react";
-import { api, dateTime, getToken, setToken } from "./api";
+import { api, dateTime, DEFAULT_TIME_ZONE, getToken, setDefaultTimeZone, setToken } from "./api";
 import type { Approval, AuditEntry, ChatReply, Meeting, User } from "./api";
 
 type Notice = { kind: "success" | "error"; text: string };
-const showDate = (date: Date) => date.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+const showDate = (date: Date) => new Date(Date.UTC(date.getFullYear(), date.getMonth(), 15)).toLocaleDateString(undefined, {
+  month: "long",
+  year: "numeric",
+  timeZone: "UTC",
+});
+const calendarDateLabel = (date: Date, options: Intl.DateTimeFormatOptions) =>
+  new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate(), 12)).toLocaleDateString(undefined, {
+    ...options,
+    timeZone: "UTC",
+  });
 const isoLocal = (date: Date) => {
-  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
-  return local.toISOString().slice(0, 16);
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: DEFAULT_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date);
+  const value = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+  return `${value.year}-${value.month}-${value.day}T${value.hour}:${value.minute}`;
 };
-const startOfDay = (value: string) => new Date(new Date(value).toDateString()).getTime();
+const dateKey = (value: string | Date) => {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: DEFAULT_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(value));
+  const values = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+  return `${values.year}-${values.month}-${values.day}`;
+};
+const calendarDayKey = (date: Date) =>
+  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+const todayInTimeZone = () => {
+  const [year, month, day] = dateKey(new Date()).split("-").map(Number);
+  return new Date(year, month - 1, day, 12);
+};
+const startOfDay = (value: string | Date) => Date.parse(`${dateKey(value)}T00:00:00Z`);
+const zonedInputToUtc = (value: string) => {
+  const input = new Date(`${value}:00Z`);
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: DEFAULT_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(input);
+  const fields = Object.fromEntries(parts.map(({ type, value }) => [type, Number(value)]));
+  const represented = Date.UTC(
+    fields.year,
+    fields.month - 1,
+    fields.day,
+    fields.hour,
+    fields.minute,
+    fields.second,
+  );
+  return new Date(input.getTime() - (represented - input.getTime())).toISOString();
+};
 const displayAssistantReply = (text: string) => text.replace(
   /\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})\b/g,
   (value) => {
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return value;
-    const day = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" }).format(date);
-    const time = new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit", hour12: true }).format(date);
+    const day = new Intl.DateTimeFormat("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+      timeZone: DEFAULT_TIME_ZONE,
+    }).format(date);
+    const time = new Intl.DateTimeFormat("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+      timeZone: DEFAULT_TIME_ZONE,
+    }).format(date);
     return `${day} at ${time}`;
   },
 );
@@ -59,7 +126,10 @@ function App() {
     return () => window.removeEventListener("calendar:unauthorized", handleUnauthorized);
   }, [navigate]);
   useEffect(() => {
-    void api<{ lab_mode?: string; mode?: string }>("/api/health").then((health) => setMode(health.lab_mode || health.mode || "secure")).catch(() => undefined);
+    void api<{ lab_mode?: string; mode?: string; default_timezone?: string }>("/api/health").then((health) => {
+      if (health.default_timezone) setDefaultTimeZone(health.default_timezone);
+      setMode(health.lab_mode || health.mode || "secure");
+    }).catch(() => undefined);
   }, []);
 
   const logout = () => {
@@ -214,10 +284,20 @@ function PageTitle({ eyebrow, title, description, action }: { eyebrow: string; t
 function Dashboard({ user }: { user: User }) {
   const { meetings, loading, error, reload } = useMeetings();
   const upcoming = meetings.filter((item) => item.status !== "cancelled" && new Date(item.start_time).getTime() >= Date.now()).sort((a, b) => +new Date(a.start_time) - +new Date(b.start_time));
-  const todayMeetings = meetings.filter((item) => item.status !== "cancelled" && startOfDay(item.start_time) === startOfDay(new Date().toISOString()));
+  const today = todayInTimeZone();
+  const todayMeetings = meetings.filter((item) => item.status !== "cancelled" && startOfDay(item.start_time) === startOfDay(today));
   const recent = [...meetings].sort((a, b) => +new Date(b.updated_at || b.start_time) - +new Date(a.updated_at || a.start_time)).slice(0, 3);
   const greetingName = user.name.trim().split(/\s+/)[0];
-  return <><PageTitle eyebrow="YOUR DAY, AT A GLANCE" title={`Good ${new Date().getHours() < 12 ? "morning" : new Date().getHours() < 18 ? "afternoon" : "evening"}, ${greetingName}`} description={new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" })} action={<Link className="button primary" to="/meetings?new=1"><Plus size={17} /> New meeting</Link>} />
+  const hour = Number(new Intl.DateTimeFormat("en-GB", { timeZone: DEFAULT_TIME_ZONE, hour: "2-digit", hourCycle: "h23" }).format(new Date()));
+  const greeting = hour < 12 ? "morning" : hour < 18 ? "afternoon" : "evening";
+  const todayLabel = new Intl.DateTimeFormat(undefined, {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+    timeZone: DEFAULT_TIME_ZONE,
+  }).format(new Date());
+  return <><PageTitle eyebrow="YOUR DAY, AT A GLANCE" title={`Good ${greeting}, ${greetingName}`} description={todayLabel} action={<Link className="button primary" to="/meetings?new=1"><Plus size={17} /> New meeting</Link>} />
     {error && <ErrorPanel message={error} retry={reload} />}
     <div className="stats-grid"><Stat icon={CalendarDays} label="Total meetings" value={loading ? "—" : meetings.length} tone="blue" /><Stat icon={Clock3} label="Today" value={loading ? "—" : todayMeetings.length} tone="cyan" /><Stat icon={ArrowRight} label="Upcoming" value={loading ? "—" : upcoming.length} tone="violet" /></div>
     <div className="dashboard-grid"><section className="card"><div className="card-heading"><div><h2>Coming up</h2><p>Your next scheduled meetings</p></div><Link to="/calendar" className="subtle-link">Open calendar <ArrowRight size={14} /></Link></div>{loading ? <Loading /> : upcoming.length ? <MeetingList meetings={upcoming.slice(0, 4)} /> : <Empty icon={CalendarDays} title="Nothing on your calendar yet" detail="Create a meeting or ask the assistant to schedule one." action={<Link className="button secondary small" to="/meetings?new=1"><Plus size={15} /> Create meeting</Link>} />}</section>
@@ -232,7 +312,7 @@ function Stat({ icon: Icon, label, value, tone }: { icon: typeof CalendarDays; l
 
 function CalendarPage() {
   const { meetings, loading, error, reload } = useMeetings();
-  const [month, setMonth] = useState(new Date());
+  const [month, setMonth] = useState(todayInTimeZone());
   const [view, setView] = useState<"month" | "week" | "agenda">("month");
   const start = new Date(month.getFullYear(), month.getMonth(), 1);
   const offset = (start.getDay() + 6) % 7;
@@ -244,12 +324,12 @@ function CalendarPage() {
     ? new Date(month.getFullYear(), month.getMonth(), month.getDate() + direction * 7)
     : new Date(month.getFullYear(), month.getMonth() + direction, 1));
   return <><PageTitle eyebrow="YOUR SCHEDULE" title="Calendar" description="Keep track of what’s happening and when." action={<Link className="button primary" to="/meetings?new=1"><Plus size={17} /> New meeting</Link>} />
-    <section className="card calendar-card"><div className="calendar-toolbar"><div className="month-nav"><button className="icon-button bordered" aria-label="Previous calendar period" onClick={() => shiftCalendar(-1)}><ChevronLeft size={18} /></button><h2>{view === "week" ? `${days[0].toLocaleDateString(undefined, { month: "short", day: "numeric" })} – ${days[6].toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}` : showDate(month)}</h2><button className="icon-button bordered" aria-label="Next calendar period" onClick={() => shiftCalendar(1)}><ChevronRight size={18} /></button><button className="button secondary small" onClick={() => setMonth(new Date())}>Today</button></div><div className="segmented"><button className={view === "month" ? "selected" : ""} onClick={() => setView("month")}>Month</button><button className={view === "week" ? "selected" : ""} onClick={() => setView("week")}>Week</button><button className={view === "agenda" ? "selected" : ""} onClick={() => setView("agenda")}>Agenda</button></div></div>
+    <section className="card calendar-card"><div className="calendar-toolbar"><div className="month-nav"><button className="icon-button bordered" aria-label="Previous calendar period" onClick={() => shiftCalendar(-1)}><ChevronLeft size={18} /></button><h2>{view === "week" ? `${calendarDateLabel(days[0], { month: "short", day: "numeric" })} – ${calendarDateLabel(days[6], { month: "short", day: "numeric", year: "numeric" })}` : showDate(month)}</h2><button className="icon-button bordered" aria-label="Next calendar period" onClick={() => shiftCalendar(1)}><ChevronRight size={18} /></button><button className="button secondary small" onClick={() => setMonth(todayInTimeZone())}>Today</button></div><div className="segmented"><button className={view === "month" ? "selected" : ""} onClick={() => setView("month")}>Month</button><button className={view === "week" ? "selected" : ""} onClick={() => setView("week")}>Week</button><button className={view === "agenda" ? "selected" : ""} onClick={() => setView("agenda")}>Agenda</button></div></div>
       {loading ? <Loading /> : error ? <ErrorPanel message={error} retry={reload} /> : view !== "agenda" ? <div className="calendar-grid"><div className="weekdays">{["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((day) => <span key={day}>{day}</span>)}</div><div className="days-grid">{days.map((day, index) => {
-        const dayMeetings = meetings.filter((m) => new Date(m.start_time).toDateString() === day.toDateString());
-        return <div className={`day-cell${day.getMonth() !== month.getMonth() ? " other-month" : ""}${day.toDateString() === new Date().toDateString() ? " today" : ""}`} key={index}><span className="day-number">{day.getDate()}</span>{dayMeetings.slice(0, 2).map((meeting) => <Link key={meeting.id} to={`/meetings?id=${meeting.id}`} className={`day-event ${meeting.status}`}>{new Date(meeting.start_time).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} · {meeting.title}</Link>)}{dayMeetings.length > 2 && <span className="more-events">+{dayMeetings.length - 2} more</span>}</div>;
-      })}</div></div> : <MeetingList meetings={meetings.filter((m) => new Date(m.start_time).getMonth() === month.getMonth() && new Date(m.start_time).getFullYear() === month.getFullYear()).sort((a, b) => +new Date(a.start_time) - +new Date(b.start_time))} />}</section>
-    <p className="calendar-note"><span className="legend scheduled" /> Scheduled <span className="legend cancelled" /> Cancelled · Times shown in your local timezone</p>
+        const dayMeetings = meetings.filter((meeting) => dateKey(meeting.start_time) === calendarDayKey(day));
+        return <div className={`day-cell${day.getMonth() !== month.getMonth() ? " other-month" : ""}${calendarDayKey(day) === calendarDayKey(todayInTimeZone()) ? " today" : ""}`} key={index}><span className="day-number">{day.getDate()}</span>{dayMeetings.slice(0, 2).map((meeting) => <Link key={meeting.id} to={`/meetings?id=${meeting.id}`} className={`day-event ${meeting.status}`}>{new Date(meeting.start_time).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", timeZone: DEFAULT_TIME_ZONE })} · {meeting.title}</Link>)}{dayMeetings.length > 2 && <span className="more-events">+{dayMeetings.length - 2} more</span>}</div>;
+      })}</div></div> : <MeetingList meetings={meetings.filter((meeting) => dateKey(meeting.start_time).slice(0, 7) === `${month.getFullYear()}-${String(month.getMonth() + 1).padStart(2, "0")}`).sort((a, b) => +new Date(a.start_time) - +new Date(b.start_time))} />}</section>
+    <p className="calendar-note"><span className="legend scheduled" /> Scheduled <span className="legend cancelled" /> Cancelled · Times shown in India Standard Time</p>
   </>;
 }
 
@@ -271,7 +351,7 @@ function MeetingsPage({ notify }: { notify: (kind: Notice["kind"], text: string)
     const form = new FormData(event.currentTarget);
     const payload = {
       title: String(form.get("title")).trim(), description: String(form.get("description") || ""),
-      start_time: new Date(String(form.get("start_time"))).toISOString(), end_time: new Date(String(form.get("end_time"))).toISOString(),
+      start_time: zonedInputToUtc(String(form.get("start_time"))), end_time: zonedInputToUtc(String(form.get("end_time"))),
       location: String(form.get("location") || ""), attendees: String(form.get("attendees") || "").split(",").map((s) => s.trim()).filter(Boolean),
     };
     if (new Date(payload.end_time) <= new Date(payload.start_time)) { notify("error", "End time must be after start time."); return; }
@@ -291,7 +371,7 @@ function MeetingsPage({ notify }: { notify: (kind: Notice["kind"], text: string)
   };
   return <><PageTitle eyebrow="YOUR COMMITMENTS" title="Meetings" description="Create, edit, and manage your meetings." action={<button className="button primary" onClick={() => { setSelected(null); setCreating(true); }}><Plus size={17} /> New meeting</button>} />
     <section className="card"><div className="list-toolbar"><div className="search-box"><span>⌕</span><input aria-label="Search meetings" placeholder="Search meetings…" value={search} onChange={(e) => setSearch(e.target.value)} /></div><select aria-label="Filter by status" value={filter} onChange={(e) => setFilter(e.target.value)}><option value="all">All meetings</option><option value="scheduled">Scheduled</option><option value="cancelled">Cancelled</option></select></div>
-      {loading ? <Loading /> : error ? <ErrorPanel message={error} retry={reload} /> : filtered.length ? <div className="meeting-table">{filtered.map((meeting) => <div className="meeting-row" key={meeting.id}><div className="meeting-date-tile"><strong>{new Date(meeting.start_time).getDate()}</strong><small>{new Date(meeting.start_time).toLocaleDateString(undefined, { month: "short" })}</small></div><button className="meeting-row-main meeting-open" onClick={() => { setSearchParams({ id: String(meeting.id) }); setDetail(meeting); }}><strong>{meeting.title}</strong><span>{dateTime(meeting.start_time)} · {meeting.location || "No location"}</span></button><span className={`status-pill ${meeting.status}`}>{meeting.status}</span><button className="button secondary small" onClick={() => { setSelected(meeting); setCreating(true); }}>Edit</button>{meeting.status !== "cancelled" && <button className="button danger-quiet small" onClick={() => void cancel(meeting)}>Cancel</button>}</div>)}</div> : <Empty icon={CalendarDays} title="No matching meetings" detail="Adjust your filters or add a new meeting." />}</section>
+      {loading ? <Loading /> : error ? <ErrorPanel message={error} retry={reload} /> : filtered.length ? <div className="meeting-table">{filtered.map((meeting) => <div className="meeting-row" key={meeting.id}><div className="meeting-date-tile"><strong>{dateKey(meeting.start_time).slice(-2)}</strong><small>{new Date(meeting.start_time).toLocaleDateString(undefined, { month: "short", timeZone: DEFAULT_TIME_ZONE })}</small></div><button className="meeting-row-main meeting-open" onClick={() => { setSearchParams({ id: String(meeting.id) }); setDetail(meeting); }}><strong>{meeting.title}</strong><span>{dateTime(meeting.start_time)} · {meeting.location || "No location"}</span></button><span className={`status-pill ${meeting.status}`}>{meeting.status}</span><button className="button secondary small" onClick={() => { setSelected(meeting); setCreating(true); }}>Edit</button>{meeting.status !== "cancelled" && <button className="button danger-quiet small" onClick={() => void cancel(meeting)}>Cancel</button>}</div>)}</div> : <Empty icon={CalendarDays} title="No matching meetings" detail="Adjust your filters or add a new meeting." />}</section>
     {detail && !creating && <Modal title="Meeting details" close={() => { setDetail(null); setSearchParams({}); }}><div className="details-content"><span className={`status-pill ${detail.status}`}>{detail.status}</span><h3>{detail.title}</h3><p>{detail.description || "No description provided."}</p><div className="details-grid"><div><small>STARTS</small><strong>{dateTime(detail.start_time)}</strong></div><div><small>ENDS</small><strong>{dateTime(detail.end_time)}</strong></div><div><small>LOCATION</small><strong>{detail.location || "Not specified"}</strong></div><div><small>ATTENDEES</small><strong>{Array.isArray(detail.attendees) ? detail.attendees.join(", ") || "None" : detail.attendees || "None"}</strong></div></div><div className="modal-actions"><button className="button secondary" onClick={() => { setDetail(null); setSearchParams({}); }}>Close</button><button className="button primary" disabled={detail.status === "cancelled"} onClick={() => { setSelected(detail); setCreating(true); }}>Edit meeting</button></div></div></Modal>}
     {(creating || selected) && <Modal title={selected ? "Edit meeting" : "Create a meeting"} close={() => { setCreating(false); setSelected(null); setDetail(null); setSearchParams({}); }}><form className="meeting-form" onSubmit={saveMeeting}><label>Title<input name="title" defaultValue={selected?.title} required maxLength={160} /></label><label>Description<textarea name="description" rows={3} defaultValue={selected?.description || ""} /></label><div className="form-grid"><label>Starts<input name="start_time" type="datetime-local" defaultValue={selected ? isoLocal(new Date(selected.start_time)) : isoLocal(new Date(Date.now() + 3600000))} required /></label><label>Ends<input name="end_time" type="datetime-local" defaultValue={selected ? isoLocal(new Date(selected.end_time)) : isoLocal(new Date(Date.now() + 7200000))} required /></label></div><label>Location<input name="location" defaultValue={selected?.location || ""} placeholder="Optional" /></label><label>Attendees<input name="attendees" defaultValue={Array.isArray(selected?.attendees) ? selected?.attendees.join(", ") : selected?.attendees || ""} placeholder="Comma-separated names or emails" /></label><div className="modal-actions"><button type="button" className="button secondary" onClick={() => { setCreating(false); setSelected(null); setDetail(null); setSearchParams({}); }}>Cancel</button><button className="button primary">{selected ? "Save changes" : "Create meeting"}</button></div></form></Modal>}
   </>;
@@ -341,7 +421,10 @@ function AssistantPage({ user, notify }: { user: User; notify: (kind: Notice["ki
     remember(conversationId, userMessages, title);
     setText(""); setBusy(true);
     try {
-      const result = await api<ChatReply>("/api/chat", { method: "POST", body: JSON.stringify({ message }) });
+      const result = await api<ChatReply>("/api/chat", {
+        method: "POST",
+        body: JSON.stringify({ message, conversation_id: conversationId }),
+      });
       setMode(/connected|llm/i.test(result.mode || "") ? "Connected LLM" : "Local Demo Mode");
       const replyMessages = [...userMessages, { role: "assistant" as const, text: displayAssistantReply(result.reply) }];
       setMessages(replyMessages);
@@ -394,7 +477,8 @@ function ApprovalsPage({ notify }: { notify: (kind: Notice["kind"], text: string
 function ApprovalCard({ approval, decide }: { approval: Approval; decide: (approval: Approval, decision: "approve" | "reject") => void }) {
   const payload = approval.payload || {};
   const expires = new Date(approval.expires_at);
-  return <article className="approval-card"><div className="approval-icon"><ShieldCheck size={20} /></div><div className="approval-body"><div className="approval-title-row"><h2>Review action: {(approval.action_type || approval.action || "calendar change").replaceAll("_", " ")}</h2><span className="status-pill pending">Pending review</span></div><p>Approving will cancel this scheduled meeting. It will remain in your calendar history.</p><div className="approval-details"><div><small>MEETING</small><strong>{approval.meeting_title || String(payload.title || `Meeting #${approval.target_id ?? approval.meeting_id ?? "—"}`)}</strong></div><div><small>CURRENT STATUS</small><strong>{approval.meeting_status || "scheduled"}</strong></div><div><small>STARTS</small><strong>{approval.meeting_start_time ? dateTime(approval.meeting_start_time) : "—"}</strong></div><div><small>EXPIRES</small><strong>{dateTime(approval.expires_at)}{expires < new Date() ? " · Expired" : ""}</strong></div></div><div className="approval-actions"><button className="button secondary" onClick={() => decide(approval, "reject")}><X size={16} /> Reject</button><button className="button primary" disabled={expires < new Date()} onClick={() => decide(approval, "approve")}><Check size={16} /> Approve action</button></div></div></article>;
+  const isUpdate = (approval.action_type || approval.action) === "update_meeting";
+  return <article className="approval-card"><div className="approval-icon"><ShieldCheck size={20} /></div><div className="approval-body"><div className="approval-title-row"><h2>Review action: {(approval.action_type || approval.action || "calendar change").replaceAll("_", " ")}</h2><span className="status-pill pending">Pending review</span></div><p>{isUpdate ? "Approving will apply the proposed meeting changes. Nothing changes until you approve." : "Approving will cancel this scheduled meeting. It will remain in your calendar history."}</p><div className="approval-details"><div><small>MEETING</small><strong>{approval.meeting_title || (typeof payload.title === "string" ? payload.title : `Meeting #${approval.target_id ?? approval.meeting_id ?? "—"}`)}</strong></div><div><small>CURRENT STATUS</small><strong>{approval.meeting_status || "scheduled"}</strong></div><div><small>CURRENT START</small><strong>{approval.meeting_start_time ? dateTime(approval.meeting_start_time) : "—"}</strong></div>{isUpdate && typeof payload.start_time === "string" && <div><small>PROPOSED START</small><strong>{dateTime(payload.start_time)}</strong></div>}{isUpdate && typeof payload.end_time === "string" && <div><small>PROPOSED END</small><strong>{dateTime(payload.end_time)}</strong></div>}{isUpdate && typeof payload.title === "string" && <div><small>PROPOSED TITLE</small><strong>{payload.title}</strong></div>}{isUpdate && typeof payload.description === "string" && <div><small>PROPOSED DESCRIPTION</small><strong>{payload.description}</strong></div>}{isUpdate && typeof payload.location === "string" && <div><small>PROPOSED LOCATION</small><strong>{payload.location}</strong></div>}<div><small>EXPIRES</small><strong>{dateTime(approval.expires_at)}{expires < new Date() ? " · Expired" : ""}</strong></div></div><div className="approval-actions"><button className="button secondary" onClick={() => decide(approval, "reject")}><X size={16} /> Reject</button><button className="button primary" disabled={expires < new Date()} onClick={() => decide(approval, "approve")}><Check size={16} /> Approve action</button></div></div></article>;
 }
 
 function ActivityPage() {
@@ -414,7 +498,7 @@ function SettingsPage({ user, mode }: { user: User; mode: string }) {
 }
 
 function MeetingList({ meetings, compact = false }: { meetings: Meeting[]; compact?: boolean }) {
-  return <div className={`upcoming-list${compact ? " compact" : ""}`}>{meetings.map((meeting) => <Link to={`/meetings?id=${meeting.id}`} key={meeting.id} className="upcoming-row"><div className="upcoming-date"><span>{new Date(meeting.start_time).toLocaleDateString(undefined, { month: "short" })}</span><strong>{new Date(meeting.start_time).getDate()}</strong></div><div className="upcoming-info"><strong>{meeting.title}</strong><span>{new Date(meeting.start_time).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })} – {new Date(meeting.end_time).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}{meeting.location ? ` · ${meeting.location}` : ""}</span></div><span className={`status-pill ${meeting.status}`}>{meeting.status}</span></Link>)}</div>;
+  return <div className={`upcoming-list${compact ? " compact" : ""}`}>{meetings.map((meeting) => <Link to={`/meetings?id=${meeting.id}`} key={meeting.id} className="upcoming-row"><div className="upcoming-date"><span>{new Date(meeting.start_time).toLocaleDateString(undefined, { month: "short", timeZone: DEFAULT_TIME_ZONE })}</span><strong>{dateKey(meeting.start_time).slice(-2)}</strong></div><div className="upcoming-info"><strong>{meeting.title}</strong><span>{new Date(meeting.start_time).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", timeZone: DEFAULT_TIME_ZONE })} – {new Date(meeting.end_time).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", timeZone: DEFAULT_TIME_ZONE })}{meeting.location ? ` · ${meeting.location}` : ""}</span></div><span className={`status-pill ${meeting.status}`}>{meeting.status}</span></Link>)}</div>;
 }
 
 function Loading() { return <div className="loading-state"><div className="loader" />Loading…</div>; }
